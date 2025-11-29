@@ -1,0 +1,9 @@
+google-play-scraper
+pandas
+numpy
+matplotlib
+seaborn
+nltk
+vaderSentiment
+psycopg2-binary
+sqlalchemy
