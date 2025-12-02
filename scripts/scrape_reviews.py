@@ -34,9 +34,9 @@ def parse_args(argv=None):
 # Bank app IDs (updated to the Play Store app IDs discovered via search)
 # Bank app IDs (updated to the Play Store app IDs discovered via search)
 banks = {
-    "CBE": "com.combanketh.mobilebanking",
-    "BOA": "com.boa.boaMobileBanking",
-    "Dashen": "com.cr2.amolelight"
+    "CBE": ["com.combanketh.mobilebanking"],
+    "BOA": ["com.boa.boaMobileBanking"],
+    "Dashen": ["com.cr2.amolelight"]
 }
 
 def main(argv=None):
@@ -75,61 +75,71 @@ def main(argv=None):
     per_bank_raw = {}
 
     # Scrape reviews per bank (request many, then dedupe)
-    for bank_name, app_id in banks_local.items():
-        logging.info("Scraping %s reviews (app=%s) using lang=%s, country=%s...", bank_name, app_id, args.lang, args.country)
+    # Allow each bank to map to a single app ID (string) or a list of app IDs.
+    # Normalize banks_local so each value is a list of app IDs.
+    for k, v in list(banks_local.items()):
+        if isinstance(v, str):
+            banks_local[k] = [v]
+        elif isinstance(v, list):
+            banks_local[k] = v
+        else:
+            logging.error('Banks mapping must contain strings or lists of app IDs. Invalid value for %s: %r', k, v)
+            raise SystemExit(1)
 
-        try:
-            # Try the paginated `reviews` first (requests up to `count` items)
-            result, _ = reviews(
-                app_id,
-                lang=args.lang,
-                country=args.country,
-                sort=Sort.NEWEST,
-                count=args.count
-            )
+    for bank_name, app_ids in banks_local.items():
+        logging.info("Scraping %s reviews (apps=%s) using lang=%s, country=%s...", bank_name, app_ids, args.lang, args.country)
+        bank_total_raw = 0
 
-            # If `reviews` returned nothing, fall back to `reviews_all` which
-            # iterates through continuations and tends to be more reliable.
-            if not result:
-                logging.info("  → 'reviews' returned 0 reviews; trying 'reviews_all' fallback...")
-                result = reviews_all(
+        for app_id in app_ids:
+            logging.info("  → Scraping app %s", app_id)
+            try:
+                result, _ = reviews(
                     app_id,
                     lang=args.lang,
                     country=args.country,
-                    sort=Sort.NEWEST
+                    sort=Sort.NEWEST,
+                    count=args.count
                 )
 
-            # Record raw count for reporting
-            per_bank_raw[bank_name] = len(result)
+                if not result:
+                    logging.info("    - 'reviews' returned 0 reviews for %s; trying 'reviews_all'...", app_id)
+                    result = reviews_all(
+                        app_id,
+                        lang=args.lang,
+                        country=args.country,
+                        sort=Sort.NEWEST
+                    )
 
-            # Process and normalize each review before storing
-            processed = 0
-            for r in result:
-                content = r.get('content') or r.get('review') or ''
-                score = r.get('score') or r.get('rating') or None
-                at = r.get('at')
-                if hasattr(at, 'strftime'):
-                    date_str = at.strftime('%Y-%m-%d')
-                else:
-                    date_str = str(at) if at else ''
+                bank_total_raw += len(result)
 
-                all_reviews.append({
-                    'review': content,
-                    'rating': score,
-                    'date': date_str,
-                    'bank': bank_name,
-                    'source': f'Google Play ({args.country.upper()})'
-                })
-                processed += 1
+                for r in result:
+                    content = r.get('content') or r.get('review') or ''
+                    score = r.get('score') or r.get('rating') or None
+                    at = r.get('at')
+                    if hasattr(at, 'strftime'):
+                        date_str = at.strftime('%Y-%m-%d')
+                    else:
+                        date_str = str(at) if at else ''
 
-            logging.info("  → Got %d raw reviews", processed)
+                    all_reviews.append({
+                        'review': content,
+                        'rating': score,
+                        'date': date_str,
+                        'bank': bank_name,
+                        'source': f'Google Play ({args.country.upper()})',
+                        'source_app': app_id
+                    })
 
-        except Exception as e:
-            logging.error("  → ERROR for %s: %s", bank_name, str(e))
-            per_bank_raw[bank_name] = 0
+                logging.info("    - Got %d raw reviews from %s", len(result), app_id)
 
-        # Be respectful to Google's servers
-        time.sleep(2)
+            except Exception as e:
+                logging.error("    - ERROR for app %s: %s", app_id, str(e))
+
+            # Be respectful to Google's servers
+            time.sleep(2)
+
+        per_bank_raw[bank_name] = bank_total_raw
+        logging.info("  → Total raw reviews for %s (all apps): %d", bank_name, bank_total_raw)
 
     # Convert to DataFrame
     df = pd.DataFrame(all_reviews)
